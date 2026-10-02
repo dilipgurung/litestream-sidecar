@@ -14,7 +14,7 @@ build:
 	@mkdir -p $(OUT_DIR)
 	$(GO) build $(GO_FLAGS) -o $(OUT_DIR)/$(BIN) $(CMD_DIR)
 
-## release: tag VERSION (e.g. make release VERSION=v1.0.0) and push it to trigger the Release workflow
+## release: tag and push VERSION (e.g. make release VERSION=v1.0.0) for a release outside the automatic per-merge patch bump
 release:
 	@set -e; \
 	if [ -z "$(VERSION)" ]; then \

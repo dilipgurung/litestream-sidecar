@@ -1,12 +1,23 @@
 name: Release
 
+# Every merge to main is released as the next patch version. Put [minor] or
+# [major] in the PR title (or commit message) to bump that part instead.
+# A v* tag pushed by hand (make release) is released as-is.
 on:
   push:
+    branches: [main]
     tags:
       - "v*"
+    paths-ignore:
+      - "**/*.md"
+      - "LICENSE"
 
 permissions:
   contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -15,22 +26,51 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
-      - name: Set version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
-
       - name: Run checks
         run: make all
 
+      - name: Set version
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "VERSION=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          if existing=$(git tag --points-at HEAD --list 'v*' | head -n1) && [ -n "$existing" ]; then
+            echo "HEAD is already tagged $existing; nothing to release."
+            exit 0
+          fi
+          latest=$(git tag --list 'v*' --sort=-v:refname | head -n1)
+          if [ -z "$latest" ]; then
+            next=v0.1.0
+          else
+            IFS=. read -r major minor patch <<< "${latest#v}"
+            patch=${patch%%-*}
+            case "$COMMIT_MESSAGE" in
+              *"[major]"*) next="v$((major + 1)).0.0" ;;
+              *"[minor]"*) next="v${major}.$((minor + 1)).0" ;;
+              *)           next="v${major}.${minor}.$((patch + 1))" ;;
+            esac
+          fi
+          git tag "$next"
+          git push origin "$next"
+          echo "VERSION=$next" >> "$GITHUB_ENV"
+
       - name: Create GitHub release
+        if: env.VERSION != ''
         run: gh release create "$VERSION" --verify-tag --generate-notes --title "$VERSION"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Index on the Go module proxy
+        if: env.VERSION != ''
         run: GOPROXY=https://proxy.golang.org go list -m "github.com/${GITHUB_REPOSITORY}@${VERSION}"
