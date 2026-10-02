@@ -1,0 +1,32 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "LICENSE"
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Check formatting
+        run: make fmt-check
+
+      - name: Vet, tidy check, unit tests, race detector
+        run: make all
+
+      - name: Cross-compile for Windows
+        run: GOOS=windows go build ./...
