@@ -5,10 +5,14 @@ A Go package that runs [litestream](https://litestream.io) as a child process, g
 ## Installation
 
 ```bash
-go get github.com/dilipgurung/litestream-sidecar
+go get github.com/dilipgurung/litestream-sidecar@latest
 ```
 
-Requires the `litestream` binary on `PATH`, or set `Sidecar.BinaryPath`.
+```go
+import litestream "github.com/dilipgurung/litestream-sidecar"
+```
+
+Requires Go 1.24+ and the [`litestream`](https://litestream.io/install/) binary (tested with 0.5.x) on `PATH`, or set `Sidecar.BinaryPath`.
 
 ## Usage
 
