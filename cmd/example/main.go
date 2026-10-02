@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	litestream "github.com/dilipk/litestream-sidecar"
+	litestream "github.com/dilipgurung/litestream-sidecar"
 )
 
 func main() {
