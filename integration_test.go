@@ -111,6 +111,8 @@ func testReplicateThenRestore(t *testing.T, s *Sidecar, replicaDir string) {
 	}
 }
 
+// requireCLIs skips the test when a CLI is missing, or fails it when
+// LITESTREAM_REQUIRE_CLIS is set (as in CI).
 func requireCLIs(t *testing.T, names ...string) {
 	t.Helper()
 	if testing.Short() {
@@ -118,6 +120,9 @@ func requireCLIs(t *testing.T, names ...string) {
 	}
 	for _, name := range names {
 		if _, err := exec.LookPath(name); err != nil {
+			if os.Getenv("LITESTREAM_REQUIRE_CLIS") != "" {
+				t.Fatalf("%s not found in PATH and LITESTREAM_REQUIRE_CLIS is set", name)
+			}
 			t.Skipf("%s not found in PATH; skipping integration test", name)
 		}
 	}

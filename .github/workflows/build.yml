@@ -30,3 +30,31 @@ jobs:
 
       - name: Cross-compile for Windows
         run: GOOS=windows go build ./...
+
+  integration:
+    runs-on: ubuntu-latest
+    env:
+      LITESTREAM_VERSION: 0.5.12
+      # Fail, rather than skip, if litestream or sqlite3 is missing.
+      LITESTREAM_REQUIRE_CLIS: "1"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Install litestream
+        run: |
+          curl -fsSL "https://github.com/benbjohnson/litestream/releases/download/v${LITESTREAM_VERSION}/litestream-${LITESTREAM_VERSION}-linux-x86_64.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP" litestream
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Show tool versions
+        run: litestream version && sqlite3 --version
+
+      - name: Run integration tests
+        run: make test-integration
