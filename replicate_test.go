@@ -11,46 +11,34 @@ import (
 )
 
 func TestReplicate_ReturnsCmd(t *testing.T) {
-	td := t.TempDir()
-	binPath := filepath.Join(td, "litestream")
-	if err := os.WriteFile(binPath, []byte("#!/bin/sh\nwhile true; do sleep 1; done"), 0755); err != nil {
-		t.Fatal(err)
-	}
-
 	s := &Sidecar{
 		DBPath:     "/data/app.db",
 		ConfigPath: "/etc/litestream.yml",
-		BinaryPath: binPath,
-		Logger:     nil,
+		BinaryPath: writeScript(t, "while true; do sleep 1; done\n"),
 	}
 
-	cmd, err := s.Replicate(testContext(t))
+	cmd, err := s.Replicate(t.Context())
 	if err != nil {
 		t.Fatalf("Replicate() error: %v", err)
 	}
-
-	if cmd == nil {
-		t.Fatal("Replicate() returned nil cmd")
-	}
-
 	if cmd.Process == nil {
 		t.Fatal("cmd.Process is nil (process not started)")
 	}
-
-	if err := cmd.Process.Kill(); err != nil {
-		t.Fatalf("Kill() error: %v", err)
+	if err := Shutdown(cmd, 0); err != nil {
+		t.Fatalf("Shutdown() error: %v", err)
 	}
 }
 
 func TestReplicate_BinaryNotFound(t *testing.T) {
 	s := &Sidecar{
 		DBPath:     "/data/app.db",
+		ConfigPath: "/etc/litestream.yml",
 		BinaryPath: "/nonexistent/litestream",
 	}
 
-	_, err := s.Replicate(testContext(t))
-	if err == nil {
-		t.Fatal("expected error for nonexistent binary")
+	_, err := s.Replicate(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "binary not found") {
+		t.Fatalf("Replicate() error = %v, want binary not found", err)
 	}
 }
 
@@ -62,7 +50,7 @@ func TestShutdown_SendsTermThenKill(t *testing.T) {
 		BinaryPath: binPath,
 	}
 
-	cmd, err := s.Replicate(testContext(t))
+	cmd, err := s.Replicate(t.Context())
 	if err != nil {
 		t.Fatalf("Replicate() error: %v", err)
 	}
@@ -85,7 +73,7 @@ func TestShutdown_GracefulExit(t *testing.T) {
 	binPath := writeScript(t, "trap 'exit 0' TERM\ntouch \"$0.ready\"\nwhile true; do sleep 0.05; done\n")
 	s := &Sidecar{DBPath: "/data/app.db", ConfigPath: "/etc/litestream.yml", BinaryPath: binPath}
 
-	cmd, err := s.Replicate(testContext(t))
+	cmd, err := s.Replicate(t.Context())
 	if err != nil {
 		t.Fatalf("Replicate() error: %v", err)
 	}
@@ -100,7 +88,7 @@ func TestShutdown_ZeroTimeoutReaps(t *testing.T) {
 	binPath := writeScript(t, "while true; do sleep 1; done\n")
 	s := &Sidecar{DBPath: "/data/app.db", ConfigPath: "/etc/litestream.yml", BinaryPath: binPath}
 
-	cmd, err := s.Replicate(testContext(t))
+	cmd, err := s.Replicate(t.Context())
 	if err != nil {
 		t.Fatalf("Replicate() error: %v", err)
 	}
@@ -172,10 +160,10 @@ func TestReplicate_LogsAllOutputWithLogger(t *testing.T) {
 		DBPath:     "/data/app.db",
 		ConfigPath: "/etc/litestream.yml",
 		BinaryPath: binPath,
-		Logger:     LoggerFunc{infoFn: record, errFn: record},
+		Logger:     funcLogger{infoFn: record, errFn: record},
 	}
 
-	cmd, err := s.Replicate(testContext(t))
+	cmd, err := s.Replicate(t.Context())
 	if err != nil {
 		t.Fatalf("Replicate() error: %v", err)
 	}
@@ -221,29 +209,20 @@ func writeScript(t *testing.T, body string) string {
 }
 
 func TestShutdown_AlreadyExitedProcess(t *testing.T) {
-	td := t.TempDir()
-	binPath := filepath.Join(td, "litestream")
-	if err := os.WriteFile(binPath, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
-		t.Fatal(err)
-	}
-
 	s := &Sidecar{
 		DBPath:     "/data/app.db",
 		ConfigPath: "/etc/litestream.yml",
-		BinaryPath: binPath,
+		BinaryPath: writeScript(t, "exit 0\n"),
 	}
 
-	cmd, err := s.Replicate(testContext(t))
+	cmd, err := s.Replicate(t.Context())
 	if err != nil {
 		t.Fatalf("Replicate() error: %v", err)
 	}
-
 	if err := cmd.Wait(); err != nil {
-		t.Logf("cmd.Wait() (expected): %v", err)
+		t.Fatalf("Wait() error: %v", err)
 	}
 
-	// Process is already reaped; Shutdown should detect ProcessState
-	// and return nil without sending any signals.
 	if err := Shutdown(cmd, time.Second); err != nil {
 		t.Errorf("Shutdown on already-exited process: got error %v, want nil", err)
 	}

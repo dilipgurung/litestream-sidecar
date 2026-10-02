@@ -2,56 +2,29 @@ package litestream
 
 import (
 	"bytes"
-	"context"
 	"io"
 	"log/slog"
-	"os"
-	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
 
-func TestSidecar_DefaultValues(t *testing.T) {
+func TestSidecar_NilLoggerDoesNotPanic(t *testing.T) {
 	s := &Sidecar{
 		DBPath:     "/data/app.db",
 		ConfigPath: "/etc/litestream.yml",
-		Logger:     slog.Default(),
+		BinaryPath: writeScript(t, "exit 0\n"),
 	}
-
-	if s.DBPath != "/data/app.db" {
-		t.Errorf("DBPath = %q, want %q", s.DBPath, "/data/app.db")
-	}
-	if s.ConfigPath != "/etc/litestream.yml" {
-		t.Errorf("ConfigPath = %q, want %q", s.ConfigPath, "/etc/litestream.yml")
-	}
-	if s.Logger == nil {
-		t.Error("Logger should not be nil")
-	}
-}
-
-func TestSidecar_NilLoggerDoesNotPanic(t *testing.T) {
-	s := &Sidecar{
-		DBPath: "/data/app.db",
-	}
-	// Logger should not panic when called
-	if err := s.RestoreIfNeeded(testContext(t)); err != nil {
-		// We expect it to fail because litestream binary doesn't exist,
-		// but it should not panic due to nil logger
+	if err := s.RestoreIfNeeded(t.Context()); err != nil {
+		t.Fatalf("RestoreIfNeeded() error: %v", err)
 	}
 }
 
 func TestSidecar_BinaryPathField(t *testing.T) {
-	td := t.TempDir()
-	binPath := filepath.Join(td, "litestream")
-	if err := os.WriteFile(binPath, []byte("#!/bin/sh\nexit 0"), 0755); err != nil {
-		t.Fatal(err)
-	}
+	binPath := writeScript(t, "exit 0\n")
+	s := &Sidecar{DBPath: "/data/app.db", BinaryPath: binPath}
 
-	s := &Sidecar{
-		DBPath:     "/data/app.db",
-		BinaryPath: binPath,
-	}
 	path, err := s.litestreamPath()
 	if err != nil {
 		t.Fatalf("litestreamPath() error: %v", err)
@@ -62,135 +35,88 @@ func TestSidecar_BinaryPathField(t *testing.T) {
 }
 
 func TestSidecar_BinaryPathNotFound(t *testing.T) {
-	s := &Sidecar{
-		DBPath:     "/data/app.db",
-		BinaryPath: "/nonexistent/litestream",
-	}
-	_, err := s.litestreamPath()
-	if err == nil {
+	s := &Sidecar{DBPath: "/data/app.db", BinaryPath: "/nonexistent/litestream"}
+	if _, err := s.litestreamPath(); err == nil {
 		t.Fatal("expected error for nonexistent binary path")
 	}
 }
 
 func TestSidecar_BinaryPathCaching(t *testing.T) {
-	td := t.TempDir()
-	binPath := filepath.Join(td, "litestream")
-	if err := os.WriteFile(binPath, []byte("#!/bin/sh\nexit 0"), 0755); err != nil {
-		t.Fatal(err)
-	}
+	s := &Sidecar{DBPath: "/data/app.db", BinaryPath: writeScript(t, "exit 0\n")}
 
-	s := &Sidecar{
-		DBPath:     "/data/app.db",
-		BinaryPath: binPath,
+	path1, err := s.litestreamPath()
+	if err != nil {
+		t.Fatalf("first call error: %v", err)
 	}
-
-	path1, err1 := s.litestreamPath()
-	path2, err2 := s.litestreamPath()
-
-	if err1 != nil {
-		t.Fatalf("first call error: %v", err1)
-	}
-	if err2 != nil {
-		t.Fatalf("second call error: %v", err2)
+	s.BinaryPath = "/nonexistent/litestream"
+	path2, err := s.litestreamPath()
+	if err != nil {
+		t.Fatalf("second call error: %v", err)
 	}
 	if path1 != path2 {
 		t.Errorf("caching failed: %q != %q", path1, path2)
 	}
 }
 
-// --- ReplicaURL field (Task 6) ---
-
 func TestSidecar_ReplicaURLField_Priority(t *testing.T) {
-	// The struct field should take priority over the env var.
-	s := &Sidecar{
-		DBPath:     "/data/app.db",
-		ReplicaURL: "s3://field-bucket/db",
-	}
-	got := s.getReplicaURL()
-	if got != "s3://field-bucket/db" {
-		t.Errorf("getReplicaURL() = %q, want %q", got, "s3://field-bucket/db")
+	t.Setenv("LITESTREAM_REPLICA_URL", "s3://env-bucket/db")
+	s := &Sidecar{DBPath: "/data/app.db", ReplicaURL: "s3://field-bucket/db"}
+
+	if got := s.effectiveReplicaURL(); got != "s3://field-bucket/db" {
+		t.Errorf("effectiveReplicaURL() = %q, want %q", got, "s3://field-bucket/db")
 	}
 }
 
 func TestSidecar_ReplicaURLField_Fallback(t *testing.T) {
 	t.Setenv("LITESTREAM_REPLICA_URL", "s3://env-bucket/db")
-	s := &Sidecar{
-		DBPath: "/data/app.db",
-		// ReplicaURL not set — should fall back to env var
-	}
-	got := s.getReplicaURL()
-	if got != "s3://env-bucket/db" {
-		t.Errorf("getReplicaURL() = %q, want %q", got, "s3://env-bucket/db")
+	s := &Sidecar{DBPath: "/data/app.db"}
+
+	if got := s.effectiveReplicaURL(); got != "s3://env-bucket/db" {
+		t.Errorf("effectiveReplicaURL() = %q, want %q", got, "s3://env-bucket/db")
 	}
 }
 
-// --- Arg building (Tasks 2, 5) ---
-
 func TestSidecar_RestoreArgs_URLMode(t *testing.T) {
-	s := &Sidecar{
-		DBPath:     "/data/app.db",
-		ReplicaURL: "s3://mybucket/db",
-	}
+	s := &Sidecar{DBPath: "/data/app.db", ReplicaURL: "s3://mybucket/db"}
 	want := []string{"restore", "-if-db-not-exists", "-if-replica-exists", "-o", "/data/app.db", "s3://mybucket/db"}
-	got := s.restoreArgs()
-	assertEq(t, got, want)
+	assertEq(t, s.restoreArgs(), want)
 }
 
 func TestSidecar_RestoreArgs_ConfigMode(t *testing.T) {
-	s := &Sidecar{
-		DBPath:     "/data/app.db",
-		ConfigPath: "/etc/litestream.yml",
-	}
+	t.Setenv("LITESTREAM_REPLICA_URL", "")
+	s := &Sidecar{DBPath: "/data/app.db", ConfigPath: "/etc/litestream.yml"}
 	want := []string{"restore", "-config", "/etc/litestream.yml", "-if-db-not-exists", "-if-replica-exists", "-o", "/data/app.db", "/data/app.db"}
-	got := s.restoreArgs()
-	assertEq(t, got, want)
+	assertEq(t, s.restoreArgs(), want)
 }
 
 func TestSidecar_ForceRestoreArgs_URLMode(t *testing.T) {
-	s := &Sidecar{
-		DBPath:     "/data/app.db",
-		ReplicaURL: "s3://mybucket/db",
-	}
+	s := &Sidecar{DBPath: "/data/app.db", ReplicaURL: "s3://mybucket/db"}
 	want := []string{"restore", "-force", "-o", "/data/app.db", "s3://mybucket/db"}
-	got := s.forceRestoreArgs()
-	assertEq(t, got, want)
+	assertEq(t, s.forceRestoreArgs(), want)
 }
 
 func TestSidecar_ForceRestoreArgs_ConfigMode(t *testing.T) {
-	s := &Sidecar{
-		DBPath:     "/data/app.db",
-		ConfigPath: "/etc/litestream.yml",
-	}
+	t.Setenv("LITESTREAM_REPLICA_URL", "")
+	s := &Sidecar{DBPath: "/data/app.db", ConfigPath: "/etc/litestream.yml"}
 	want := []string{"restore", "-config", "/etc/litestream.yml", "-force", "-o", "/data/app.db", "/data/app.db"}
-	got := s.forceRestoreArgs()
-	assertEq(t, got, want)
+	assertEq(t, s.forceRestoreArgs(), want)
 }
 
 func TestSidecar_ReplicateArgs_URLMode(t *testing.T) {
-	s := &Sidecar{
-		DBPath:     "/data/app.db",
-		ReplicaURL: "s3://mybucket/db",
-	}
+	s := &Sidecar{DBPath: "/data/app.db", ReplicaURL: "s3://mybucket/db"}
 	want := []string{"replicate", "/data/app.db", "s3://mybucket/db"}
-	got := s.replicateArgs()
-	assertEq(t, got, want)
+	assertEq(t, s.replicateArgs(), want)
 }
 
 func TestSidecar_ReplicateArgs_ConfigMode(t *testing.T) {
-	s := &Sidecar{
-		DBPath:     "/data/app.db",
-		ConfigPath: "/etc/litestream.yml",
-	}
+	t.Setenv("LITESTREAM_REPLICA_URL", "")
+	s := &Sidecar{DBPath: "/data/app.db", ConfigPath: "/etc/litestream.yml"}
 	want := []string{"replicate", "-config", "/etc/litestream.yml"}
-	got := s.replicateArgs()
-	assertEq(t, got, want)
+	assertEq(t, s.replicateArgs(), want)
 }
 
-// --- Validation (Task 9) ---
-
 func TestSidecar_Validation_EmptyDBPath(t *testing.T) {
-	s := &Sidecar{}
-	err := s.validate()
+	err := (&Sidecar{}).validate()
 	if err == nil {
 		t.Fatal("expected error for empty DBPath")
 	}
@@ -200,149 +126,99 @@ func TestSidecar_Validation_EmptyDBPath(t *testing.T) {
 }
 
 func TestSidecar_Validation_MissingConfigAndURL(t *testing.T) {
-	s := &Sidecar{
-		DBPath: "/data/app.db",
-	}
-	err := s.validate()
-	if err == nil {
+	t.Setenv("LITESTREAM_REPLICA_URL", "")
+	s := &Sidecar{DBPath: "/data/app.db"}
+	if err := s.validate(); err == nil {
 		t.Fatal("expected error when both ConfigPath and ReplicaURL are empty")
 	}
 }
 
 func TestSidecar_Validation_HappyPathURLMode(t *testing.T) {
-	s := &Sidecar{
-		DBPath:     "/data/app.db",
-		ReplicaURL: "s3://bucket/db",
-	}
+	s := &Sidecar{DBPath: "/data/app.db", ReplicaURL: "s3://bucket/db"}
 	if err := s.validate(); err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
 
 func TestSidecar_Validation_HappyPathConfigMode(t *testing.T) {
-	s := &Sidecar{
-		DBPath:     "/data/app.db",
-		ConfigPath: "/etc/litestream.yml",
-	}
+	s := &Sidecar{DBPath: "/data/app.db", ConfigPath: "/etc/litestream.yml"}
 	if err := s.validate(); err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
 
-// --- pipeLines (Task 8) ---
-
 func TestPipeLines_WritesLinesToLogger(t *testing.T) {
-	var buf bytes.Buffer
-	l := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	l, buf := bufferLogger()
+	pipeLines(strings.NewReader("hello\nworld\nlast line\n"), l, "prefix: ", l.Info)
 
-	// Use a synchronous reader so all data is available before the call.
-	r := strings.NewReader("hello\nworld\nlast line\n")
-	pipeLinesInfo(r, l, "prefix: ")
-
-	output := buf.String()
-	if !strings.Contains(output, "prefix: hello") {
-		t.Errorf("output should contain 'prefix: hello', got: %s", output)
-	}
-	if !strings.Contains(output, "prefix: world") {
-		t.Errorf("output should contain 'prefix: world', got: %s", output)
-	}
-	if !strings.Contains(output, "prefix: last line") {
-		t.Errorf("output should contain 'prefix: last line', got: %s", output)
+	for _, want := range []string{"prefix: hello", "prefix: world", "prefix: last line"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("output should contain %q, got: %s", want, buf)
+		}
 	}
 }
 
 func TestPipeLines_EmptyInput(t *testing.T) {
-	var buf bytes.Buffer
-	l := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	l, buf := bufferLogger()
+	pipeLines(strings.NewReader(""), l, "prefix: ", l.Info)
 
-	pipeLinesInfo(strings.NewReader(""), l, "prefix: ")
-
-	output := buf.String()
-	if output != "" {
-		t.Errorf("expected empty output, got: %s", output)
+	if buf.Len() != 0 {
+		t.Errorf("expected empty output, got: %s", buf)
 	}
 }
 
 func TestPipeLines_Unicode(t *testing.T) {
-	var buf bytes.Buffer
-	l := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	l, buf := bufferLogger()
+	pipeLines(strings.NewReader("こんにちは世界\n"), l, "prefix: ", l.Info)
 
-	pipeLinesInfo(strings.NewReader("こんにちは世界\n"), l, "prefix: ")
-
-	output := buf.String()
-	if !strings.Contains(output, "こんにちは世界") {
-		t.Errorf("output should contain unicode, got: %s", output)
+	if !strings.Contains(buf.String(), "こんにちは世界") {
+		t.Errorf("output should contain unicode, got: %s", buf)
 	}
 }
 
 func TestPipeLines_NoFinalNewline(t *testing.T) {
-	var buf bytes.Buffer
-	l := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	l, buf := bufferLogger()
+	pipeLines(strings.NewReader("hello\nworld"), l, "prefix: ", l.Info)
 
-	// Line without a trailing newline should still be emitted
-	pipeLinesInfo(strings.NewReader("hello\nworld"), l, "prefix: ")
-
-	output := buf.String()
-	if !strings.Contains(output, "prefix: hello") {
-		t.Errorf("output should contain 'prefix: hello', got: %s", output)
-	}
-	if !strings.Contains(output, "prefix: world") {
-		t.Errorf("output should contain 'prefix: world', got: %s", output)
+	for _, want := range []string{"prefix: hello", "prefix: world"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("output should contain %q, got: %s", want, buf)
+		}
 	}
 }
 
-func TestPipeLines_LongLine(t *testing.T) {
-	var buf bytes.Buffer
-	l := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+func TestPipeLines_LineOver64KB(t *testing.T) {
+	l, buf := bufferLogger()
+	longLine := strings.Repeat("a", 100*1024)
+	pipeLines(strings.NewReader(longLine+"\n"), l, "", l.Info)
 
-	// Line longer than bufio.Scanner's default 64KB limit
-	longLine := strings.Repeat("a", 100*1024) // 100KB
-	r := strings.NewReader(longLine + "\n")
-	pipeLinesInfo(r, l, "")
-
-	output := buf.String()
-	if !strings.Contains(output, longLine) {
+	if !strings.Contains(buf.String(), longLine) {
 		t.Errorf("output should contain the full 100KB line")
 	}
 }
 
 func TestPipeLines_ErrorLevel(t *testing.T) {
-	var buf bytes.Buffer
-	l := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	l, buf := bufferLogger()
+	pipeLines(strings.NewReader("error line\n"), l, "prefix: ", l.Error)
 
-	pipeLinesError(strings.NewReader("error line\n"), l, "prefix: ")
-
-	output := buf.String()
-	// slog Error output includes "level=ERROR" in text handler
-	if !strings.Contains(output, "prefix: error line") {
-		t.Errorf("output should contain 'prefix: error line', got: %s", output)
+	if !strings.Contains(buf.String(), "level=ERROR") || !strings.Contains(buf.String(), "prefix: error line") {
+		t.Errorf("output should contain an ERROR-level 'prefix: error line', got: %s", buf)
 	}
 }
 
 func TestPipeLines_LoggerPanicRecovery(t *testing.T) {
 	var capturedMsg string
 	var capturedArgs []any
-	panicLogger := LoggerFunc{
-		infoFn: func(msg string, args ...any) { panic("intentional panic for test") },
+	l := funcLogger{
+		infoFn: func(string, ...any) { panic("intentional panic for test") },
 		errFn: func(msg string, args ...any) {
 			capturedMsg = msg
 			capturedArgs = args
-			// Don't panic here — the test needs this call to succeed.
 		},
 	}
 
-	// Must use a goroutine since Info panics. The recover inside
-	// pipeLines should catch it, log via Error, and not crash.
-	finished := make(chan struct{}, 1)
-	go func() {
-		defer func() { finished <- struct{}{} }()
-		pipeLinesInfo(strings.NewReader("hello\n"), panicLogger, "prefix: ")
-	}()
-	<-finished
+	pipeLines(strings.NewReader("hello\n"), l, "prefix: ", l.Info)
 
-	if capturedMsg == "" {
-		t.Error("expected pipeLines to log the recovered panic, but Error was never called")
-	}
 	if capturedMsg != "pipeLines: recovered panic in Logger" {
 		t.Errorf("Error msg = %q, want %q", capturedMsg, "pipeLines: recovered panic in Logger")
 	}
@@ -352,20 +228,20 @@ func TestPipeLines_LoggerPanicRecovery(t *testing.T) {
 }
 
 func TestPipeLines_LoggerPanicKeepsDraining(t *testing.T) {
-	panicLogger := LoggerFunc{
-		infoFn: func(msg string, args ...any) { panic("boom") },
-		errFn:  func(msg string, args ...any) {},
+	l := funcLogger{
+		infoFn: func(string, ...any) { panic("boom") },
+		errFn:  func(string, ...any) {},
 	}
 
 	// io.Pipe writes block until read, so the writer only finishes if
 	// pipeLines keeps draining after the Logger panics.
 	pr, pw := io.Pipe()
-	go pipeLinesInfo(pr, panicLogger, "")
+	go pipeLines(pr, l, "", l.Info)
 
 	written := make(chan struct{})
 	go func() {
 		defer close(written)
-		for i := 0; i < 10; i++ {
+		for range 10 {
 			if _, err := pw.Write([]byte("line\n")); err != nil {
 				return
 			}
@@ -380,30 +256,22 @@ func TestPipeLines_LoggerPanicKeepsDraining(t *testing.T) {
 	}
 }
 
-// LoggerFunc is a function type that implements Logger, useful for tests.
-type LoggerFunc struct {
+type funcLogger struct {
 	infoFn func(msg string, args ...any)
 	errFn  func(msg string, args ...any)
 }
 
-func (f LoggerFunc) Info(msg string, args ...any)  { f.infoFn(msg, args...) }
-func (f LoggerFunc) Error(msg string, args ...any) { f.errFn(msg, args...) }
+func (f funcLogger) Info(msg string, args ...any)  { f.infoFn(msg, args...) }
+func (f funcLogger) Error(msg string, args ...any) { f.errFn(msg, args...) }
 
-// testContext returns a non-nil context for testing.
-func testContext(t testing.TB) context.Context {
-	t.Helper()
-	return context.Background()
+func bufferLogger() (*slog.Logger, *bytes.Buffer) {
+	var buf bytes.Buffer
+	return slog.New(slog.NewTextHandler(&buf, nil)), &buf
 }
 
-// assertEq is a helper for string slice comparison.
 func assertEq(t testing.TB, got, want []string) {
 	t.Helper()
-	if len(got) != len(want) {
-		t.Fatalf("len(got)=%d, len(want)=%d\ngot:  %#v\nwant: %#v", len(got), len(want), got, want)
-	}
-	for i := range got {
-		if got[i] != want[i] {
-			t.Fatalf("index %d: got %q, want %q\nfull got:  %#v\nfull want: %#v", i, got[i], want[i], got, want)
-		}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got:  %#v\nwant: %#v", got, want)
 	}
 }

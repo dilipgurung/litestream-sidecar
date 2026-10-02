@@ -21,8 +21,7 @@ func main() {
 
 	dbPath := getenv("DB_PATH", "/data/app.db")
 
-	// exited receives litestream's exit status. It stays nil (blocks
-	// forever in select) when the sidecar is disabled.
+	// Stays nil when the sidecar is disabled, so the select never picks it.
 	var exited chan error
 
 	if os.Getenv("LITESTREAM_REPLICA_URL") != "" {
@@ -38,9 +37,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		// Cancelling ctx sends SIGTERM to litestream so it can flush
-		// pending changes; it is killed if still running after
-		// ShutdownTimeout.
+		// Cancelling ctx stops litestream gracefully.
 		cmd, err := side.Replicate(ctx)
 		if err != nil {
 			logger.Error("litestream replicate start failed", "err", err.Error())
