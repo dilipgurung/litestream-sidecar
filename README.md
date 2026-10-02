@@ -12,7 +12,7 @@ go get github.com/dilipgurung/litestream-sidecar@latest
 import litestream "github.com/dilipgurung/litestream-sidecar"
 ```
 
-Requires Go 1.26.2+ and the [`litestream`](https://litestream.io/install/) binary (tested with 0.5.x) on `PATH`, or set `Sidecar.BinaryPath`.
+Requires Go 1.24+ and the [`litestream`](https://litestream.io/install/) binary (tested with 0.5.x) on `PATH`, or set `Sidecar.BinaryPath`.
 
 ## Usage
 
