@@ -4,20 +4,48 @@ import (
 	"bytes"
 	"io"
 	"log/slog"
+	"os"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 )
 
-func TestSidecar_NilLoggerDoesNotPanic(t *testing.T) {
+func TestRestore_NilLoggerWritesOutputToStdio(t *testing.T) {
 	s := &Sidecar{
 		DBPath:     "/data/app.db",
 		ConfigPath: "/etc/litestream.yml",
-		BinaryPath: writeScript(t, "exit 0\n"),
+		BinaryPath: writeScript(t, "echo out-line\necho err-line >&2\n"),
 	}
-	if err := s.RestoreIfNeeded(t.Context()); err != nil {
+
+	stdout := captureFile(t, &os.Stdout)
+	stderr := captureFile(t, &os.Stderr)
+	err := s.RestoreIfNeeded(t.Context())
+	gotOut, gotErr := stdout(), stderr()
+
+	if err != nil {
 		t.Fatalf("RestoreIfNeeded() error: %v", err)
+	}
+	if !strings.Contains(gotOut, "out-line") {
+		t.Errorf("stdout = %q, want it to contain %q", gotOut, "out-line")
+	}
+	if !strings.Contains(gotErr, "err-line") {
+		t.Errorf("stderr = %q, want it to contain %q", gotErr, "err-line")
+	}
+}
+
+func TestRestore_LoggerFailureIncludesOutput(t *testing.T) {
+	l, _ := bufferLogger()
+	s := &Sidecar{
+		DBPath:     "/data/app.db",
+		ConfigPath: "/etc/litestream.yml",
+		BinaryPath: writeScript(t, "echo boom >&2\nexit 1\n"),
+		Logger:     l,
+	}
+
+	err := s.Restore(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("Restore() error = %v, want it to contain litestream's output", err)
 	}
 }
 
@@ -263,6 +291,26 @@ type funcLogger struct {
 
 func (f funcLogger) Info(msg string, args ...any)  { f.infoFn(msg, args...) }
 func (f funcLogger) Error(msg string, args ...any) { f.errFn(msg, args...) }
+
+// captureFile swaps *f for a pipe and returns a func that restores *f and
+// returns everything written to the pipe.
+func captureFile(t *testing.T, f **os.File) func() string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := *f
+	*f = w
+	t.Cleanup(func() { *f = orig })
+	return func() string {
+		*f = orig
+		w.Close()
+		out, _ := io.ReadAll(r)
+		r.Close()
+		return string(out)
+	}
+}
 
 func bufferLogger() (*slog.Logger, *bytes.Buffer) {
 	var buf bytes.Buffer

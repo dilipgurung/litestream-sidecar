@@ -35,8 +35,8 @@ type Sidecar struct {
 	BinaryPath string
 
 	// Logger receives structured logs and litestream's output. If nil,
-	// Replicate writes litestream's output straight to os.Stdout and
-	// os.Stderr, and nothing else is logged.
+	// litestream's output goes straight to os.Stdout and os.Stderr, and
+	// nothing else is logged.
 	Logger Logger
 
 	// ShutdownTimeout is how long Replicate's subprocess is given to exit
@@ -165,12 +165,24 @@ func (s *Sidecar) restore(ctx context.Context, args []string) error {
 		return err
 	}
 
-	s.logger().Info("running litestream restore", "binary", binPath, "args", args)
-	output, err := exec.CommandContext(ctx, binPath, args...).CombinedOutput()
+	l := s.logger()
+	l.Info("running litestream restore", "binary", binPath, "args", args)
+	cmd := exec.CommandContext(ctx, binPath, args...)
+
+	if _, ok := l.(stdioLogger); ok {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("litestream restore failed: %w", err)
+		}
+		return nil
+	}
+
+	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("litestream restore failed: %s: %w", output, err)
 	}
-	s.logger().Info("litestream restore completed", "output", string(output))
+	l.Info("litestream restore completed", "output", string(output))
 	return nil
 }
 

@@ -24,10 +24,12 @@ func main() {
 	// Stays nil when the sidecar is disabled, so the select never picks it.
 	var exited chan error
 
-	if os.Getenv("LITESTREAM_REPLICA_URL") != "" {
+	configPath := os.Getenv("LITESTREAM_CONFIG")
+
+	if os.Getenv("LITESTREAM_REPLICA_URL") != "" || configPath != "" {
 		side := &litestream.Sidecar{
 			DBPath:          dbPath,
-			ConfigPath:      getenv("LITESTREAM_CONFIG", "/etc/litestream.yml"),
+			ConfigPath:      configPath,
 			Logger:          logger,
 			ShutdownTimeout: 10 * time.Second,
 		}
@@ -48,7 +50,7 @@ func main() {
 
 		logger.Info("litestream sidecar started", "db", dbPath)
 	} else {
-		logger.Info("litestream sidecar disabled (LITESTREAM_REPLICA_URL not set)")
+		logger.Info("litestream sidecar disabled (neither LITESTREAM_REPLICA_URL nor LITESTREAM_CONFIG is set)")
 	}
 
 	// Application runs here...
