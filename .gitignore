@@ -1,0 +1,32 @@
+# Binaries / build output
+/tmp/
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+build-errors.log
+
+# Go workspace
+go.work
+go.work.sum
+
+# Local SQLite databases
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Re-include migrations even when a user has a global *.sql ignore.
+!migrations/*.sql
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Local env
+.env
+.env.local
+
+.chief/config.yaml
