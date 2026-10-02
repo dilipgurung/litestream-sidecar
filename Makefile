@@ -14,10 +14,26 @@ build:
 	@mkdir -p $(OUT_DIR)
 	$(GO) build $(GO_FLAGS) -o $(OUT_DIR)/$(BIN) $(CMD_DIR)
 
-## release: compile with debug info stripped (smaller binary)
+## release: tag VERSION (e.g. make release VERSION=v1.0.0) and push it to trigger the Release workflow
 release:
-	@mkdir -p $(OUT_DIR)
-	$(GO) build $(GO_FLAGS) -ldflags="-s -w" -o $(OUT_DIR)/$(BIN) $(CMD_DIR)
+	@set -e; \
+	if [ -z "$(VERSION)" ]; then \
+		echo "Usage: make release VERSION=v1.0.0"; \
+		echo "Tags are immutable and cannot be recreated. Provide an explicit, unused version."; \
+		exit 1; \
+	fi; \
+	if git rev-parse -q --verify "refs/tags/$(VERSION)" >/dev/null; then \
+		echo "Tag $(VERSION) already exists; tags are immutable. Bump the version."; \
+		exit 1; \
+	fi; \
+	echo "Tagging version $(VERSION)"; \
+	git tag $(VERSION); \
+	echo "Pushing tag to GitHub..."; \
+	git push origin $(VERSION); \
+	echo "Pushed tag $(VERSION) to GitHub"; \
+	echo "The Release workflow is now running checks and publishing the release."; \
+	echo "The GitHub release will appear once the run completes:"; \
+	echo "  https://github.com/dilipgurung/litestream-sidecar/actions"
 
 ## run: build and run the example (set DB_PATH, LITESTREAM_REPLICA_URL etc. via env)
 run: build
