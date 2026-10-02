@@ -3,6 +3,9 @@ name: Release
 # Every merge to main is released as the next patch version. Put [minor] or
 # [major] in the PR title (or commit message) to bump that part instead.
 # A v* tag pushed by hand (make release) is released as-is.
+#
+# Go requires v2+ modules to end their module path in /vN, so a v2+ version
+# fails here unless go.mod has already been updated to match.
 on:
   push:
     branches: [main]
@@ -41,7 +44,17 @@ jobs:
         env:
           COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
+          check_module_path() {
+            major=${1#v}
+            major=${major%%.*}
+            module=$(go list -m)
+            if [ "$major" -ge 2 ] && [ "${module##*/}" != "v$major" ]; then
+              echo "::error::$1 needs the module path to end in /v$major (go.mod has $module). Update go.mod and imports first; see https://go.dev/doc/modules/major-version"
+              exit 1
+            fi
+          }
           if [ "$GITHUB_REF_TYPE" = tag ]; then
+            check_module_path "$GITHUB_REF_NAME"
             echo "VERSION=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
             exit 0
           fi
@@ -61,6 +74,7 @@ jobs:
               *)           next="v${major}.${minor}.$((patch + 1))" ;;
             esac
           fi
+          check_module_path "$next"
           git tag "$next"
           git push origin "$next"
           echo "VERSION=$next" >> "$GITHUB_ENV"
